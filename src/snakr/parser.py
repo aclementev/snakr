@@ -1,5 +1,8 @@
 import ast
-import sys
+import collections
+import importlib.machinery
+import importlib.util
+import sysconfig
 from pathlib import Path
 from typing import NamedTuple
 
@@ -15,7 +18,7 @@ class Import(NamedTuple):
     right: str
 
 
-def find_module_root(path: Path) -> str | None:
+def find_module_root(path: Path) -> str:
     """Find the root module name given the path of a Python file (its top level parent module)
 
     This function traverses up the directory tree to find the outermost module name by looking for:
@@ -110,13 +113,13 @@ def path_to_module(path: Path, root_path: Path | None = None) -> str:
 
     # Find package root if not provided
     if root_path is None:
-        root_path = find_module_root(path)
+        root_path = get_module_root_path(path)
         if root_path is None:
             raise ValueError(f"Could not determine package root for {path}")
 
     # Get the relative path from the root
     try:
-        rel_path = path.relative_to(root_path)
+        rel_path = path.absolute().relative_to(root_path.parent)
     except ValueError as e:
         raise ValueError(f"Path {path} is not under root {root_path}") from e
 
@@ -132,54 +135,132 @@ def path_to_module(path: Path, root_path: Path | None = None) -> str:
     return ".".join(parts) if parts else ""
 
 
-def parse_imports(path: Path) -> DepGraph:
-    """Parse all import statements from a Python file.
+class ImportResult(NamedTuple):
+    path: Path | None
+    is_stdlib: bool
+
+
+def find_module(module_name: str) -> ImportResult | None:
+    """
+    Resolve a module name to its file path using importlib.util.find_spec.
 
     Args:
-        file_path: Path to the Python file to analyze.
+        module_name: The fully qualified module name (e.g., 'snakr.parser').
 
     Returns:
-        A set of imported module names.
+        Path to the module's .py file, or None if not found or is a namespace/built-in/frozen package.
+    """
+    try:
+        spec = importlib.util.find_spec(module_name)
+    except ModuleNotFoundError:
+        # This is most likely a guarded import that is not relevant and should be ignored, but could
+        # also mean trouble... hard to distinguish
+        return None
+    if not spec:
+        return None
+
+    if is_stdlib(spec):
+        path = spec.origin if spec.origin not in ("built-in", "frozen") else None
+        return ImportResult(path, is_stdlib=True)
+
+    return ImportResult(spec.origin, is_stdlib=False)
+
+
+def is_stdlib(spec: importlib.machinery.ModuleSpec) -> bool:
+    """
+    Check if a given module path is part of the Python standard library.
+
+    Args:
+        spec: The importlib.machinery.ModuleSpec object for the module.
+
+    Returns:
+        True if the module is in the stdlib, False otherwise.
+    """
+    stdlib_path = Path(sysconfig.get_paths()["stdlib"]).resolve()
+    module_origin = getattr(spec, "origin", None)
+    if not module_origin or module_origin in ("built-in", "frozen"):
+        return False
+    module_path = Path(module_origin)
+    try:
+        return module_path.resolve().is_relative_to(stdlib_path)
+    except AttributeError:
+        # For Python <3.9, fallback to manual check
+        return str(module_path.resolve()).startswith(str(stdlib_path))
+        # For Python <3.9, fallback to manual check
+        return str(module_path.resolve()).startswith(str(stdlib_path))
+
+
+def trim_module(module_name: str, depth: int | None) -> str:
+    if depth is None:
+        return module_name
+    assert depth > 0, "depth cannot be less than 0"
+    return ".".join(module_name.split(".")[:depth])
+
+
+def parse_imports(path: Path, max_depth: int | None = None) -> DepGraph:
+    """
+    Recursively parse all import statements from a Python file and its dependencies.
+
+    Args:
+        path: Path to the Python file to analyze.
+        recurse_stdlib: Whether to recurse into stdlib modules (default: False).
+
+    Returns:
+        DepGraph: A directed graph of module dependencies.
 
     Raises:
         FileNotFoundError: If the specified file does not exist.
         SyntaxError: If the file contains invalid Python syntax.
     """
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            tree = ast.parse(f.read())
-    except FileNotFoundError:
-        print(f"Error: File '{path}' not found.", file=sys.stderr)
-        sys.exit(1)
-    except SyntaxError as e:
-        print(f"Error parsing file: {e}", file=sys.stderr)
-        sys.exit(1)
-
     graph = nx.DiGraph()
-    # XXX(alvaro): This is wrong, we don't want the root, we want the full module! (minus depth normalization)
-    current_module = Module(find_module_root(path))
-    print("Analyzing", current_module.name)
+    queue = collections.deque()
+    processed = set()
 
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for name in node.names:
-                # Handle dotted imports by taking the first part
-                print(
-                    f"Found import statement at line {node.lineno}: {name.name} {repr(node)}"
-                )
-                imported = Module(name.name)
-                graph.add_edge(current_module, imported)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            # For relative imports, we need to handle the dots
-            if node.level > 0:
-                # Skip relative imports for now as they require package context
-                continue
-            print(
-                f"Found from import statement at line {node.lineno}: {node.module} {repr(node)}"
-            )
-            imported = Module(node.module)
-            graph.add_edge(current_module, imported)
+    # Seed with the initial module
+    start_module = path_to_module(path)
+    queue.append(start_module)
 
+    while queue:
+        module_name = queue.popleft()
+        if module_name in processed:
+            continue
+        processed.add(module_name)
+        # print("Processing", module_name)
+
+        module_result = find_module(module_name)
+        if module_result is None:
+            continue
+        if module_result.is_stdlib:
+            # FIXME(alvaro): We don't support recursing into stdlib modules, which many of them cannot be parsed anyway
+            continue
+
+        current_module = Module(module_name)
+        try:
+            with open(module_result.path, "r", encoding="utf-8") as f:
+                tree = ast.parse(f.read())
+        except (FileNotFoundError, SyntaxError):
+            continue
+        # FIXME(alvaro): I belive our import recursion is not correct: we need to handle also automatic
+        # import of __init__.py files of all of the module levels
+        # FIXME(alvaro): We also need to handle from imports with level >0 (what are they?)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for name in node.names:
+                    imported_name = trim_module(name.name, depth=max_depth)
+                    imported_module = Module(imported_name)
+                    graph.add_edge(current_module, imported_module)
+                    if imported_name not in processed:
+                        # print("Adding import", imported_name)
+                        queue.append(imported_name)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                if node.level > 0:
+                    continue  # Skip relative imports for now
+                imported_name = trim_module(node.module, depth=max_depth)
+                imported_module = Module(imported_name)
+                graph.add_edge(current_module, imported_module)
+                if imported_name not in processed:
+                    # print("Adding from import", imported_name)
+                    queue.append(imported_name)
     return DepGraph(graph)
 
 
@@ -195,6 +276,41 @@ def _is_python_module(path: Path) -> bool:
     """
     # FIXME(alvaro): Add support for namespace packages (PEP 420)
     return (path / "__init__.py").exists()
+
+
+def get_module_root_path(path: Path) -> Path:
+    """Return the Path to the root of the module tree for the input file.
+
+    This function traverses up the directory tree from the given Python file,
+    looking for the outermost directory that is still a Python module (contains __init__.py),
+    or stops at the project root indicator (pyproject.toml, setup.py, etc).
+
+    Args:
+        path: Path to a Python module file.
+
+    Returns:
+        Path to the root of the module tree (directory containing __init__.py or just below project root).
+
+    Raises:
+        AssertionError: If the input path is not a file.
+
+    Examples:
+        >>> get_module_root_path(Path("src/foo/bar/baz.py"))
+        Path("src/foo")
+        >>> get_module_root_path(Path("mypackage/subpackage/module.py"))
+        Path("mypackage")
+    """
+    assert path.is_file(), "We must have a module file"
+    parent = path.resolve().parent
+    last_module_dir = parent
+    while True:
+        if parent == parent.parent or _is_project_root(parent):
+            break
+        if not _is_python_module(parent):
+            break
+        last_module_dir = parent
+        parent = parent.parent
+    return last_module_dir
 
 
 if __name__ == "__main__":

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from snakr.parser import find_module_root, path_to_module
+from snakr.parser import find_module_root, get_module_root_path, path_to_module
 
 
 @pytest.mark.parametrize(
@@ -205,3 +205,70 @@ def _add_init_files(path, root):
     while current != root and current.name != "src":
         (current / "__init__.py").touch()
         current = current.parent
+
+
+@pytest.mark.parametrize(
+    "path_parts,expected_root_parts",
+    [
+        pytest.param(["foo.py"], ["."], id="single_file"),
+        pytest.param(["foo", "bar.py"], ["foo"], id="single_file_in_dir"),
+        pytest.param(
+            ["src", "foo", "bar.py"], ["src", "foo"], id="src_single_file_in_dir"
+        ),
+        pytest.param(["foo", "__init__.py"], ["foo"], id="init_file"),
+        pytest.param(
+            ["foo", "bar", "__init__.py"], ["foo"], id="init_file_in_subdir"
+        ),
+        pytest.param(["foo", "bar", "baz.py"], ["foo"], id="nested_module"),
+        pytest.param(["src", "foo", "__init__.py"], ["src", "foo"], id="src_init_file"),
+        pytest.param(
+            ["src", "foo", "bar", "__init__.py"],
+            ["src", "foo"],
+            id="src_init_file_in_subdir",
+        ),
+        pytest.param(
+            ["foo", "bar", "baz", "qux.py"],
+            ["foo"],
+            id="deeply_nested_module",
+        ),
+        pytest.param(
+            ["foo", "bar", "baz", "__init__.py"],
+            ["foo"],
+            id="deeply_nested_init",
+        ),
+        pytest.param(
+            ["foo", "bar", "baz", "qux", "__init__.py"],
+            ["foo"],
+            id="deeply_nested_init_in_subdir",
+        ),
+    ],
+)
+def test_get_module_root_path(tmp_path, path_parts, expected_root_parts):
+    """Test get_module_root_path returns the correct Path for various module layouts."""
+    path = tmp_path.joinpath(*path_parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    _add_init_files(path, root=tmp_path)
+    expected = tmp_path.joinpath(*expected_root_parts)
+    assert get_module_root_path(path) == expected
+
+
+def _tree(path: Path, prefix: str = ""):
+    """Print the directory tree of the given path, using unicode characters for pretty output."""
+    if not path.exists():
+        print(f"{path} [does not exist]")
+        return
+
+    def inner(current_path: Path, prefix: str = ""):
+        entries = sorted(list(current_path.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+        entries_count = len(entries)
+        for idx, entry in enumerate(entries):
+            connector = "└── " if idx == entries_count - 1 else "├── "
+            print(prefix + connector + entry.name)
+            if entry.is_dir():
+                extension = "    " if idx == entries_count - 1 else "│   "
+                inner(entry, prefix + extension)
+
+    print(path.name)
+    if path.is_dir():
+        inner(path)

@@ -31,7 +31,9 @@ class DepGraph:
     """
 
     def __init__(self, graph: nx.DiGraph) -> None:
-        check_acyclic_graph(graph)
+        # FIXME(alvaro): Turns out in python sometimes you CAN have import cycles, so we have to
+        # just handle them
+        # check_acyclic_graph(graph)
         self.graph = graph
 
 

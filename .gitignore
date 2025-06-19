@@ -11,3 +11,5 @@ wheels/
 .vscode/
 .python-version
 .cursor/
+
+graph_dot.png

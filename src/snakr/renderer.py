@@ -8,7 +8,7 @@ from rich.tree import Tree
 from snakr.tree import DepGraph
 
 
-class TreeRenderer(Protocol):
+class GraphRenderer(Protocol):
     """Protocol for tree renderers."""
 
     def render(self, dep_graph: DepGraph) -> None:
@@ -23,7 +23,7 @@ class TreeRenderer(Protocol):
 # TODO(alvaro): A graphviz/dot renderer
 
 
-class RichTreeRenderer:
+class RichGraphRenderer:
     """Renderer that outputs trees using the rich library."""
 
     def __init__(self, console: Console | None = None) -> None:
@@ -57,30 +57,29 @@ class RichTreeRenderer:
             n for n in dep_graph.graph.nodes() if dep_graph.graph.in_degree(n) == 0
         ]
 
-        # Create a tree for each root node
         if not root_nodes:
             return Tree("[red]No dependencies found[/]")
 
-        # Use the first root as the main tree root
         main_tree = Tree(f"[bold blue]{root_nodes[0].name}[/]")
 
-        # Helper function to recursively build the tree
-        def _add_node_to_tree(node, tree):
+        def _add_node_to_tree(node, tree, path):
+            if node in path:
+                # Cycle detected
+                tree.add(f"[red]↩ cycle to {node.name}[/]")
+                return
             # Skip the root node as it's already added
             if node != root_nodes[0]:
                 node_tree = tree.add(f"[blue]{node.name}[/]")
             else:
                 node_tree = tree
-            # Add all children (outgoing edges)
+            new_path = path | {node}
             for child in dep_graph.graph.successors(node):
-                _add_node_to_tree(child, node_tree)
+                _add_node_to_tree(child, node_tree, new_path)
 
-        # Build the tree starting from the first root
-        _add_node_to_tree(root_nodes[0], main_tree)
+        _add_node_to_tree(root_nodes[0], main_tree, set())
 
-        # Add any additional root nodes as separate trees
         for root in root_nodes[1:]:
             root_tree = main_tree.add(f"[bold blue]{root.name}[/]")
-            _add_node_to_tree(root, root_tree)
+            _add_node_to_tree(root, root_tree, set())
 
         return main_tree
