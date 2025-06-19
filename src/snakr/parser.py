@@ -197,7 +197,37 @@ def trim_module(module_name: str, depth: int | None) -> str:
     return ".".join(module_name.split(".")[:depth])
 
 
-def parse_imports(path: Path, max_depth: int | None = None) -> DepGraph:
+def _is_submodule(module: str, parent: str) -> bool:
+    """
+    Check if a module is a submodule (or the same module) as another module.
+
+    Args:
+        module: The module name to check (e.g., 'foo.bar.baz').
+        parent: The parent module name (e.g., 'foo.bar').
+
+    Returns:
+        True if module is the same as parent or a submodule of parent, False otherwise.
+
+    Examples:
+        >>> _is_submodule('foo.bar.baz', 'foo.bar')
+        True
+        >>> _is_submodule('foo.bar', 'foo.bar')
+        True
+        >>> _is_submodule('foo.bar', 'foo')
+        True
+        >>> _is_submodule('foo', 'foo.bar')
+        False
+        >>> _is_submodule('foo.bar', 'foo.bar.baz')
+        False
+    """
+    if module == parent:
+        return True
+    return module.startswith(parent + ".")
+
+
+def parse_imports(
+    path: Path, max_depth: int | None = None, ignore_modules: set[str] | None = None
+) -> DepGraph:
     """
     Recursively parse all import statements from a Python file and its dependencies.
 
@@ -215,13 +245,19 @@ def parse_imports(path: Path, max_depth: int | None = None) -> DepGraph:
     graph = nx.DiGraph()
     queue = collections.deque()
     processed = set()
+    ignore_modules = ignore_modules or set()
 
     # Seed with the initial module
     start_module = path_to_module(path)
     queue.append(start_module)
+    if any(_is_submodule(start_module, ignored) for ignored in ignore_modules):
+        raise ValueError("The initial module cannot be in the ignored modules")
 
     while queue:
         module_name = queue.popleft()
+        # Skip if in ignore_modules or is a submodule of any ignored module
+        if any(_is_submodule(module_name, ignored) for ignored in ignore_modules):
+            continue
         if module_name in processed:
             continue
         processed.add(module_name)
