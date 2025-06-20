@@ -53,6 +53,14 @@ def main() -> None:
         help="Path to the Python file to analyze",
     )
     parser.add_argument(
+        "-o",
+        "--output-path",
+        type=Path,
+        default=Path("out.png"),
+        help="File path to the output",
+    )
+    parser.add_argument(
+        "-d",
         "--max-depth",
         type=lambda x: int(x)
         if int(x) > 0
@@ -86,8 +94,9 @@ def main() -> None:
     elapsed_s = time.perf_counter() - start
     print(f"elapsed: {elapsed_s:.2f}s")
 
-    # FIXME(alvaro): We need to fix this
-    renderer = GraphvizRenderer("out.png")
+    # TODO(alvaro): Add a parser arguemnt for passing generic renderer opts. It would be something like a key-value pair thing
+    # that each renderer knows how to use
+    renderer = GraphvizRenderer(args.output_path)
     renderer.render(dep_graph)
 
 
