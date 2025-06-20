@@ -1,10 +1,14 @@
 """Module for rendering import dependency trees in different formats."""
 
-from typing import Protocol
+import os
+from typing import TYPE_CHECKING, Protocol
 
 import networkx as nx
 
 from snakr.tree import DepGraph
+
+if TYPE_CHECKING:
+    import pygraphviz as pgv
 
 
 class Renderer(Protocol):
@@ -39,11 +43,22 @@ class GraphvizRenderer:
             dep_graph: The dependency graph to render.
         """
 
+        import random
+
         assert self.output_path, "There must be an output path"
         self._check_pygraphviz()
 
-        agraph = nx.nx_agraph.to_agraph(dep_graph.graph)
-        agraph.layout("dot")
+        agraph: pgv.AGraph = nx.nx_agraph.to_agraph(dep_graph.graph)
+
+        COLORS = ["lightcoral", "lightgreen", "lightblue"]
+        rng = random.Random(42)  # Fixed seed for deterministic coloring
+        for node in agraph.nodes():
+            node.attr["color"] = rng.choice(COLORS)
+            node.attr["style"] = "filled"
+
+        # TODO(alvaro): Explore other layouts
+        layout = os.environ.get("SNAKR_LAYOUT") or "dot"
+        agraph.layout(layout)
         agraph.draw(self.output_path)
 
     def _check_pygraphviz(self) -> None:
