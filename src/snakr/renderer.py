@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import networkx as nx
 
-from snakr.tree import DepGraph
+from snakr.tree import DepGraph, ImportType, Module
 
 if TYPE_CHECKING:
     import pygraphviz as pgv
@@ -43,17 +43,22 @@ class GraphvizRenderer:
             dep_graph: The dependency graph to render.
         """
 
-        import random
-
         assert self.output_path, "There must be an output path"
         self._check_pygraphviz()
 
         agraph: pgv.AGraph = nx.nx_agraph.to_agraph(dep_graph.graph)
 
-        COLORS = ["lightcoral", "lightgreen", "lightblue"]
-        rng = random.Random(42)  # Fixed seed for deterministic coloring
+        COLOR_MAP = {
+            ImportType.FIRST_PARTY: "lightblue",
+            ImportType.THIRD_PARTY: "lightgreen",
+            ImportType.STDLIB: "lightcoral",
+        }
+        # Build a cache for O(1) lookup
+        module_by_name = {str(n): n for n in dep_graph.graph.nodes}
         for node in agraph.nodes():
-            node.attr["color"] = rng.choice(COLORS)
+            module_obj = module_by_name[node.get_name()]
+            color = COLOR_MAP[module_obj.import_type]
+            node.attr["color"] = color
             node.attr["style"] = "filled"
 
         # TODO(alvaro): Explore other layouts

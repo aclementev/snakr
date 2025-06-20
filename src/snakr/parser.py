@@ -8,14 +8,7 @@ from typing import NamedTuple
 
 import networkx as nx
 
-from snakr.tree import DepGraph, Module
-
-
-class Import(NamedTuple):
-    """Represents an import"""
-
-    left: str
-    right: str
+from snakr.tree import DepGraph, ImportType, Module
 
 
 def find_module_root(path: Path) -> str:
@@ -136,11 +129,26 @@ def path_to_module(path: Path, root_path: Path | None = None) -> str:
 
 
 class ImportResult(NamedTuple):
+    name: str
     path: Path | None
-    is_stdlib: bool
+    import_type: ImportType
 
 
-def find_module(module_name: str) -> ImportResult | None:
+def is_first_party_module(module: str, parent_module: str) -> bool:
+    """
+    Check if the module is a submodule (or the same module) as parent_module.
+
+    Args:
+        module: The module name to check (e.g., 'foo.bar.baz').
+        parent_module: The parent module name (e.g., 'foo').
+
+    Returns:
+        True if module is the same as parent_module or a submodule of parent_module, False otherwise.
+    """
+    return _is_submodule(module, parent_module)
+
+
+def find_module(module_name: str, parent_module: str) -> ImportResult | None:
     """
     Resolve a module name to its file path using importlib.util.find_spec.
 
@@ -161,9 +169,16 @@ def find_module(module_name: str) -> ImportResult | None:
 
     if is_stdlib(spec):
         path = spec.origin if spec.origin not in ("built-in", "frozen") else None
-        return ImportResult(path, is_stdlib=True)
+        return ImportResult(module_name, path=path, import_type=ImportType.STDLIB)
 
-    return ImportResult(spec.origin, is_stdlib=False)
+    # Determine if first-party or third-party
+    path = Path(spec.origin) if spec.origin else None
+    import_type = (
+        ImportType.FIRST_PARTY
+        if is_first_party_module(module_name, parent_module=parent_module)
+        else ImportType.THIRD_PARTY
+    )
+    return ImportResult(module_name, path, import_type=import_type)
 
 
 def is_stdlib(spec: importlib.machinery.ModuleSpec) -> bool:
@@ -242,35 +257,42 @@ def parse_imports(
         FileNotFoundError: If the specified file does not exist.
         SyntaxError: If the file contains invalid Python syntax.
     """
-    graph = nx.DiGraph()
     queue = collections.deque()
     processed = set()
     ignore_modules = ignore_modules or set()
 
+    # FIXME(alvaro): This is a O(k) check
+    def _is_ignored_module(module: str) -> bool:
+        return any(_is_submodule(module, ignored) for ignored in ignore_modules)
+
     # Seed with the initial module
     start_module = path_to_module(path)
+    parent_module = find_module_root(path)
+
     queue.append(start_module)
-    if any(_is_submodule(start_module, ignored) for ignored in ignore_modules):
+    if _is_ignored_module(start_module):
         raise ValueError("The initial module cannot be in the ignored modules")
 
+    nodes = {}
+    edges = []
     while queue:
         module_name = queue.popleft()
         # Skip if in ignore_modules or is a submodule of any ignored module
-        if any(_is_submodule(module_name, ignored) for ignored in ignore_modules):
+        if _is_ignored_module(module_name):
             continue
         if module_name in processed:
             continue
         processed.add(module_name)
         # print("Processing", module_name)
 
-        module_result = find_module(module_name)
+        module_result = find_module(module_name, parent_module=parent_module)
         if module_result is None:
             continue
-        if module_result.is_stdlib:
+        nodes[module_name] = Module(module_name, import_type=module_result.import_type)
+
+        if module_result.import_type == ImportType.STDLIB:
             # FIXME(alvaro): We don't support recursing into stdlib modules, which many of them cannot be parsed anyway
             continue
-
-        current_module = Module(module_name)
         try:
             with open(module_result.path, "r", encoding="utf-8") as f:
                 tree = ast.parse(f.read())
@@ -283,20 +305,32 @@ def parse_imports(
             if isinstance(node, ast.Import):
                 for name in node.names:
                     imported_name = trim_module(name.name, depth=max_depth)
-                    imported_module = Module(imported_name)
-                    graph.add_edge(current_module, imported_module)
-                    if imported_name not in processed:
-                        # print("Adding import", imported_name)
+                    if imported_name not in processed and not _is_ignored_module(
+                        imported_name
+                    ):
+                        edges.append((module_name, imported_name))
                         queue.append(imported_name)
             elif isinstance(node, ast.ImportFrom) and node.module:
                 if node.level > 0:
                     continue  # Skip relative imports for now
                 imported_name = trim_module(node.module, depth=max_depth)
-                imported_module = Module(imported_name)
-                graph.add_edge(current_module, imported_module)
-                if imported_name not in processed:
-                    # print("Adding from import", imported_name)
+                if imported_name not in processed and not _is_ignored_module(
+                    imported_name
+                ):
+                    edges.append((module_name, imported_name))
                     queue.append(imported_name)
+
+    # Build the graph
+    graph = nx.DiGraph()
+    graph.add_nodes_from(nodes.values())
+    graph.add_edges_from(
+        (
+            (nodes[left], nodes[right])
+            for left, right in edges
+            # Remove the invalid nodes
+            if left in nodes and right in nodes
+        )
+    )
     return DepGraph(graph)
 
 

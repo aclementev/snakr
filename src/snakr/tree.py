@@ -3,6 +3,7 @@
 import itertools
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum, auto
 from typing import Hashable, TypeVar
 
 import networkx as nx
@@ -10,9 +11,23 @@ import networkx as nx
 _TNode = TypeVar("_TNode", bound=Hashable)
 
 
+class ImportType(Enum):
+    """
+    Type of import:
+    - FIRST_PARTY: Module is part of the current project (under project root)
+    - THIRD_PARTY: Module is installed in site-packages (not stdlib or first-party)
+    - STDLIB: Module is part of the Python standard library
+    """
+
+    FIRST_PARTY = auto()
+    THIRD_PARTY = auto()
+    STDLIB = auto()
+
+
 @dataclass(frozen=True)
 class Module:
     name: str
+    import_type: ImportType
 
     def __str__(self) -> str:
         return self.name

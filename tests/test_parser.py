@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from snakr.parser import find_module_root, get_module_root_path, path_to_module
+from snakr.parser import (
+    find_module,
+    find_module_root,
+    get_module_root_path,
+    path_to_module,
+)
+from snakr.tree import ImportType
 
 
 @pytest.mark.parametrize(
@@ -216,9 +222,7 @@ def _add_init_files(path, root):
             ["src", "foo", "bar.py"], ["src", "foo"], id="src_single_file_in_dir"
         ),
         pytest.param(["foo", "__init__.py"], ["foo"], id="init_file"),
-        pytest.param(
-            ["foo", "bar", "__init__.py"], ["foo"], id="init_file_in_subdir"
-        ),
+        pytest.param(["foo", "bar", "__init__.py"], ["foo"], id="init_file_in_subdir"),
         pytest.param(["foo", "bar", "baz.py"], ["foo"], id="nested_module"),
         pytest.param(["src", "foo", "__init__.py"], ["src", "foo"], id="src_init_file"),
         pytest.param(
@@ -260,7 +264,9 @@ def _tree(path: Path, prefix: str = ""):
         return
 
     def inner(current_path: Path, prefix: str = ""):
-        entries = sorted(list(current_path.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower()))
+        entries = sorted(
+            list(current_path.iterdir()), key=lambda p: (not p.is_dir(), p.name.lower())
+        )
         entries_count = len(entries)
         for idx, entry in enumerate(entries):
             connector = "└── " if idx == entries_count - 1 else "├── "
@@ -272,3 +278,22 @@ def _tree(path: Path, prefix: str = ""):
     print(path.name)
     if path.is_dir():
         inner(path)
+
+
+@pytest.mark.parametrize(
+    "module_name,expected_type",
+    [
+        ("collections", ImportType.STDLIB),
+        ("networkx", ImportType.THIRD_PARTY),
+        ("snakr.parser", ImportType.FIRST_PARTY),
+    ],
+)
+def test_import_type_detection(module_name, expected_type):
+    result = find_module(module_name, parent_module="snakr")
+    assert result is not None
+    assert result.import_type == expected_type
+
+
+def test_import_type_detection_missing():
+    result = find_module("this_module_does_not_exist_12345", parent_module="snakr")
+    assert result is None
