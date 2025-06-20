@@ -50,8 +50,11 @@ def test_module_path_conversion(tmp_path, path_parts, expected_module):
         expected_module: The expected module name after conversion.
     """
     path = tmp_path.joinpath(*path_parts)
-    # FIXME(alvaro): When we have root finding logic we won't need this
-    root_path = tmp_path / "src" if path_parts[0] == "src" else tmp_path
+    # The root path should point to the root of the module tree (but inside the module)
+    root_path = tmp_path / path_parts[0]
+    if path_parts[0] == "src":
+        root_path = root_path / path_parts[1]
+
     assert path_to_module(path, root_path=root_path) == expected_module
 
 

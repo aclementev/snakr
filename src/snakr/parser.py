@@ -110,8 +110,8 @@ def path_to_module(path: Path, root_path: Path | None = None) -> str:
         if root_path is None:
             raise ValueError(f"Could not determine package root for {path}")
 
-    # Get the relative path from the root
     try:
+        # Get the path to the module root
         rel_path = path.absolute().relative_to(root_path.parent)
     except ValueError as e:
         raise ValueError(f"Path {path} is not under root {root_path}") from e
