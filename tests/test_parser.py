@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from snakr.dependency import ImportType
 from snakr.parser import (
     find_module,
     find_module_root,
     get_module_root_path,
     path_to_module,
 )
-from snakr.tree import ImportType
 
 
 @pytest.mark.parametrize(

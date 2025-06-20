@@ -8,7 +8,7 @@ from typing import NamedTuple
 
 import networkx as nx
 
-from snakr.tree import DepGraph, ImportType, Module
+from snakr.dependency import DepGraph, ImportType, Module
 
 
 def find_module_root(path: Path) -> str:
@@ -384,7 +384,7 @@ def get_module_root_path(path: Path) -> Path:
 
 
 if __name__ == "__main__":
-    from snakr.tree import visualize_dot
+    from snakr.dependency import visualize_dot
 
     visualize_dot(
         parse_imports(
