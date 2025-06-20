@@ -13,3 +13,4 @@ wheels/
 .cursor/
 
 graph_dot.png
+out.png

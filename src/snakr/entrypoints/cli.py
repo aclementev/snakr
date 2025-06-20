@@ -5,8 +5,37 @@ import time
 from pathlib import Path
 
 from snakr.parser import parse_imports
-from snakr.renderer import RichGraphRenderer
-from snakr.tree import visualize_dot
+from snakr.renderer import GraphvizRenderer
+
+
+def _parse_module_path(x: str) -> str:
+    """
+    Check if the string is a valid Python module path.
+
+    A valid module path consists of one or more dot-separated identifiers,
+    where each identifier starts with a letter or underscore and is followed by
+    letters, digits, or underscores.
+
+    Examples of valid module paths:
+        - foo
+        - foo.bar
+        - _foo.bar2
+
+
+    Args:
+        s: The string to check.
+
+    Returns:
+        True if s is a valid module path, False otherwise.
+    """
+    import re
+
+    # Python identifier: [a-zA-Z_][a-zA-Z0-9_]*
+    identifier = r"[a-zA-Z_][a-zA-Z0-9_]*"
+    module_path_pattern = rf"^{identifier}(?:\.{identifier})*$"
+    if not re.match(module_path_pattern, x):
+        raise argparse.ArgumentTypeError("the supplied module is not a valid module")
+    return x
 
 
 def main() -> None:
@@ -58,39 +87,8 @@ def main() -> None:
     print(f"elapsed: {elapsed_s:.2f}s")
 
     # FIXME(alvaro): We need to fix this
-    # renderer = RichGraphRenderer()
-    # renderer.render(dep_graph)
-    visualize_dot(dep_graph.graph)
-
-
-def _parse_module_path(x: str) -> str:
-    """
-    Check if the string is a valid Python module path.
-
-    A valid module path consists of one or more dot-separated identifiers,
-    where each identifier starts with a letter or underscore and is followed by
-    letters, digits, or underscores.
-
-    Examples of valid module paths:
-        - foo
-        - foo.bar
-        - _foo.bar2
-
-
-    Args:
-        s: The string to check.
-
-    Returns:
-        True if s is a valid module path, False otherwise.
-    """
-    import re
-
-    # Python identifier: [a-zA-Z_][a-zA-Z0-9_]*
-    identifier = r"[a-zA-Z_][a-zA-Z0-9_]*"
-    module_path_pattern = rf"^{identifier}(?:\.{identifier})*$"
-    if not re.match(module_path_pattern, x):
-        raise argparse.ArgumentTypeError("the supplied module is not a valid module")
-    return x
+    renderer = GraphvizRenderer("out.png")
+    renderer.render(dep_graph)
 
 
 if __name__ == "__main__":
