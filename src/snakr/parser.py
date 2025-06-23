@@ -3,6 +3,7 @@ import collections
 import importlib.machinery
 import importlib.util
 import sysconfig
+from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
@@ -181,6 +182,19 @@ def find_module(module_name: str, parent_module: str) -> ImportResult | None:
     return ImportResult(module_name, path, import_type=import_type)
 
 
+@lru_cache(maxsize=1)
+def _get_stdlib_path() -> Path:
+    return Path(sysconfig.get_paths()["stdlib"]).resolve()
+
+
+@lru_cache(maxsize=1)
+def _get_site_packages_path() -> Path:
+    import site
+
+    # site.getsitepackages() may return multiple paths; pick the first
+    return Path(site.getsitepackages()[0]).resolve()
+
+
 def is_stdlib(spec: importlib.machinery.ModuleSpec) -> bool:
     """
     Check if a given module path is part of the Python standard library.
@@ -191,18 +205,27 @@ def is_stdlib(spec: importlib.machinery.ModuleSpec) -> bool:
     Returns:
         True if the module is in the stdlib, False otherwise.
     """
-    stdlib_path = Path(sysconfig.get_paths()["stdlib"]).resolve()
-    module_origin = getattr(spec, "origin", None)
+    module_origin = spec.origin
     if not module_origin or module_origin in ("built-in", "frozen"):
-        return False
-    module_path = Path(module_origin)
+        return True
+
+    module_path = Path(module_origin).resolve()
+    stdlib_path = _get_stdlib_path()
+    site_packages_path = _get_site_packages_path()
+
     try:
-        return module_path.resolve().is_relative_to(stdlib_path)
+        # Must be in stdlib, but not in site-packages
+        return module_path.is_relative_to(
+            stdlib_path
+        ) and not module_path.is_relative_to(site_packages_path)
     except AttributeError:
-        # For Python <3.9, fallback to manual check
-        return str(module_path.resolve()).startswith(str(stdlib_path))
-        # For Python <3.9, fallback to manual check
-        return str(module_path.resolve()).startswith(str(stdlib_path))
+        # Python <3.9 fallback
+        stdlib_str = str(stdlib_path)
+        site_packages_str = str(site_packages_path)
+        module_str = str(module_path)
+        return module_str.startswith(stdlib_str) and not module_str.startswith(
+            site_packages_str
+        )
 
 
 def trim_module(module_name: str, depth: int | None) -> str:
