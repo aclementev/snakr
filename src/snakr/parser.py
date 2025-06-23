@@ -240,6 +240,31 @@ def _is_submodule(module: str, parent: str) -> bool:
     return module.startswith(parent + ".")
 
 
+class ImportParser(ast.NodeVisitor):
+    """A node visitor implementation for parsing AST to detect imports in files"""
+
+    def __init__(self, max_depth: int | None = None):
+        self.max_depth = max_depth
+        self.imports: list[str] = []
+
+    def visit_Import(self, node: ast.Import) -> None:
+        for name in node.names:
+            imported_name = trim_module(name.name, depth=self.max_depth)
+            self.imports.append(imported_name)
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+        # Skip relative imports (level > 0)
+        if node.level > 0 or not node.module:
+            return
+        imported_name = trim_module(node.module, depth=self.max_depth)
+        self.imports.append(imported_name)
+        self.generic_visit(node)
+
+    def get_imports(self) -> list[str]:
+        return self.imports
+
+
 def parse_imports(
     path: Path, max_depth: int | None = None, ignore_modules: set[str] | None = None
 ) -> DepGraph:
@@ -298,27 +323,15 @@ def parse_imports(
                 tree = ast.parse(f.read())
         except (FileNotFoundError, SyntaxError):
             continue
-        # FIXME(alvaro): I belive our import recursion is not correct: we need to handle also automatic
-        # import of __init__.py files of all of the module levels
-        # FIXME(alvaro): We also need to handle from imports with level >0 (what are they?)
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                for name in node.names:
-                    imported_name = trim_module(name.name, depth=max_depth)
-                    if imported_name not in processed and not _is_ignored_module(
-                        imported_name
-                    ):
-                        edges.append((module_name, imported_name))
-                        queue.append(imported_name)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                if node.level > 0:
-                    continue  # Skip relative imports for now
-                imported_name = trim_module(node.module, depth=max_depth)
-                if imported_name not in processed and not _is_ignored_module(
-                    imported_name
-                ):
-                    edges.append((module_name, imported_name))
-                    queue.append(imported_name)
+
+        # Use ImportParser to extract imports
+        visitor = ImportParser(max_depth=max_depth)
+        visitor.visit(tree)
+        imported_modules = visitor.get_imports()
+        for imported_name in imported_modules:
+            if imported_name not in processed and not _is_ignored_module(imported_name):
+                edges.append((module_name, imported_name))
+                queue.append(imported_name)
 
     # Build the graph
     graph = nx.DiGraph()
