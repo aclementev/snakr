@@ -8,9 +8,10 @@ from snakr.dependency import ImportType
 from snakr.parser import (
     find_module,
     find_module_root,
-    get_module_root_path,
     path_to_module,
 )
+from snakr.utils.module import get_module_root_path, is_project_root, is_python_module
+from snakr.utils.submodule import is_submodule
 
 
 @pytest.mark.parametrize(

@@ -2,131 +2,15 @@ import ast
 import collections
 import importlib.machinery
 import importlib.util
-import sysconfig
-from functools import lru_cache
 from pathlib import Path
 from typing import NamedTuple
 
 import networkx as nx
 
 from snakr.dependency import DepGraph, ImportType, Module
-
-
-def find_module_root(path: Path) -> str:
-    """Find the root module name given the path of a Python file (its top level parent module)
-
-    This function traverses up the directory tree to find the outermost module name by looking for:
-    1. Project root indicators (pyproject.toml or setup.py)
-    2. src/ directory (common in modern Python projects)
-    3. The outermost directory containing __init__.py
-
-    The function ensures it finds the top-level module by continuing to search up
-    until it finds a project root or src directory, rather than stopping at the first
-    __init__.py it encounters.
-
-    Args:
-        path: Path to a Python module file.
-
-    Returns:
-        The name of the outermost module, or None if not found.
-
-    Examples:
-        >>> find_module_root(Path("src/foo/bar/baz.py"))
-        "foo"
-        >>> find_module_root(Path("mypackage/subpackage/module.py"))
-        "mypackage"
-    """
-    assert path.is_file(), "We must have a module file"
-
-    # Search the parents looking for a module
-    parent = path.resolve().parent
-    current_module = path.stem
-
-    while True:
-        # Check if we are already at the root of the project
-        if parent == parent.parent or _is_project_root(parent):
-            return current_module
-
-        if not _is_python_module(parent):
-            # This is a single file module, so we return itself
-            # FIXME: Consider flagging this as an entrypoint/main module
-            return current_module
-
-        # We are looking at a module, so we can check the parent
-        current_module = parent.stem
-        parent = parent.parent
-
-
-def _is_project_root(path: Path) -> bool:
-    """Check if a path is the root of a Python project by looking for common indicators.
-
-    Args:
-        path: Path to check
-
-    Returns:
-        True if the path contains indicators of being a project root, False otherwise
-    """
-    # Check for common Python project configuration files
-    return any(
-        (path / f).exists()
-        for f in ("pyproject.toml", "setup.cfg", "setup.py", ".git", ".svn")
-    )
-
-
-def path_to_module(path: Path, root_path: Path | None = None) -> str:
-    """Convert a Python file path to its fully qualified module name.
-
-    This function takes a path to a Python file and converts it to the module name
-    that would be used to import it. It handles various project structures and edge cases.
-
-    Examples:
-        - /path/to/project/src/package/module.py -> package.module
-        - /path/to/project/src/package/subpackage/module.py -> package.subpackage.module
-        - /path/to/project/package/__init__.py -> package
-        - /path/to/project/package/subpackage/__init__.py -> package.subpackage
-
-    Args:
-        path: Path to the Python file.
-        root_path: Optional path to the package root. If not provided, will attempt to find it.
-
-    Returns:
-        The fully qualified module name.
-
-    Raises:
-        ValueError: If the path does not end in .py
-        ValueError: If no package root has been supplied and the package root cannot be determined.
-        ValueError: If the file is in an excluded directory (__pycache__, hidden dirs, etc).
-    """
-    if path.suffix != ".py":
-        raise ValueError(f"Path must be a Python file: {path}")
-
-    # Check if file is in an excluded directory
-    for part in path.parts:
-        if part == "__pycache__" or part.startswith("."):
-            raise ValueError(f"File {path} is in an excluded directory: {part}")
-
-    # Find package root if not provided
-    if root_path is None:
-        root_path = get_module_root_path(path)
-        if root_path is None:
-            raise ValueError(f"Could not determine package root for {path}")
-
-    try:
-        # Get the path to the module root
-        rel_path = path.absolute().relative_to(root_path.parent)
-    except ValueError as e:
-        raise ValueError(f"Path {path} is not under root {root_path}") from e
-
-    parts = []
-    for part in rel_path.parts[:-1]:  # All but the last part (filename)
-        parts.append(part)
-
-    # Handle the filename
-    filename = rel_path.stem
-    if filename != "__init__":
-        parts.append(filename)
-
-    return ".".join(parts) if parts else ""
+from snakr.utils.module import find_module_root, path_to_module
+from snakr.utils.stdlib import is_stdlib
+from snakr.utils.submodule import is_submodule, trim_module
 
 
 class ImportResult(NamedTuple):
@@ -146,7 +30,7 @@ def is_first_party_module(module: str, parent_module: str) -> bool:
     Returns:
         True if module is the same as parent_module or a submodule of parent_module, False otherwise.
     """
-    return _is_submodule(module, parent_module)
+    return is_submodule(module, parent_module)
 
 
 def find_module(module_name: str, parent_module: str) -> ImportResult | None:
@@ -180,87 +64,6 @@ def find_module(module_name: str, parent_module: str) -> ImportResult | None:
         else ImportType.THIRD_PARTY
     )
     return ImportResult(module_name, path, import_type=import_type)
-
-
-@lru_cache(maxsize=1)
-def _get_stdlib_path() -> Path:
-    return Path(sysconfig.get_paths()["stdlib"]).resolve()
-
-
-@lru_cache(maxsize=1)
-def _get_site_packages_path() -> Path:
-    import site
-
-    # site.getsitepackages() may return multiple paths; pick the first
-    return Path(site.getsitepackages()[0]).resolve()
-
-
-def is_stdlib(spec: importlib.machinery.ModuleSpec) -> bool:
-    """
-    Check if a given module path is part of the Python standard library.
-
-    Args:
-        spec: The importlib.machinery.ModuleSpec object for the module.
-
-    Returns:
-        True if the module is in the stdlib, False otherwise.
-    """
-    module_origin = spec.origin
-    if not module_origin or module_origin in ("built-in", "frozen"):
-        return True
-
-    module_path = Path(module_origin).resolve()
-    stdlib_path = _get_stdlib_path()
-    site_packages_path = _get_site_packages_path()
-
-    try:
-        # Must be in stdlib, but not in site-packages
-        return module_path.is_relative_to(
-            stdlib_path
-        ) and not module_path.is_relative_to(site_packages_path)
-    except AttributeError:
-        # Python <3.9 fallback
-        stdlib_str = str(stdlib_path)
-        site_packages_str = str(site_packages_path)
-        module_str = str(module_path)
-        return module_str.startswith(stdlib_str) and not module_str.startswith(
-            site_packages_str
-        )
-
-
-def trim_module(module_name: str, depth: int | None) -> str:
-    if depth is None:
-        return module_name
-    assert depth > 0, "depth cannot be less than 0"
-    return ".".join(module_name.split(".")[:depth])
-
-
-def _is_submodule(module: str, parent: str) -> bool:
-    """
-    Check if a module is a submodule (or the same module) as another module.
-
-    Args:
-        module: The module name to check (e.g., 'foo.bar.baz').
-        parent: The parent module name (e.g., 'foo.bar').
-
-    Returns:
-        True if module is the same as parent or a submodule of parent, False otherwise.
-
-    Examples:
-        >>> _is_submodule('foo.bar.baz', 'foo.bar')
-        True
-        >>> _is_submodule('foo.bar', 'foo.bar')
-        True
-        >>> _is_submodule('foo.bar', 'foo')
-        True
-        >>> _is_submodule('foo', 'foo.bar')
-        False
-        >>> _is_submodule('foo.bar', 'foo.bar.baz')
-        False
-    """
-    if module == parent:
-        return True
-    return module.startswith(parent + ".")
 
 
 class ImportParser(ast.NodeVisitor):
@@ -307,14 +110,12 @@ def parse_imports(
     """
     queue = collections.deque()
     processed = set()
-    preprocessed = set()
     ignore_modules = ignore_modules or set()
     nodes = {}
     edges = []
 
-    # FIXME(alvaro): This is a O(k) check
     def _is_ignored_module(module: str) -> bool:
-        return any(_is_submodule(module, ignored) for ignored in ignore_modules)
+        return any(is_submodule(module, ignored) for ignored in ignore_modules)
 
     def _queue_module_and_parents(module_name: str):
         """
@@ -324,7 +125,6 @@ def parse_imports(
         parts = module_name.split(".")
         parent_packages = [".".join(parts[:i]) for i in range(1, len(parts))]
         all_to_queue = parent_packages + [module_name]
-        # Add parent edges: child -> parent using zip with slices
         for child, parent in zip(all_to_queue[1:], all_to_queue[:-1]):
             if child and parent:
                 edges.append((child, parent))
@@ -343,7 +143,6 @@ def parse_imports(
 
     while queue:
         module_name = queue.popleft()
-        # Skip if in ignore_modules or is a submodule of any ignored module
         if _is_ignored_module(module_name):
             continue
         if module_name in processed:
@@ -356,7 +155,6 @@ def parse_imports(
         nodes[module_name] = Module(module_name, import_type=module_result.import_type)
 
         if module_result.import_type == ImportType.STDLIB:
-            # FIXME(alvaro): We don't support recursing into stdlib modules, which many of them cannot be parsed anyway
             continue
         try:
             with open(module_result.path, "r", encoding="utf-8") as f:
@@ -364,7 +162,6 @@ def parse_imports(
         except (FileNotFoundError, SyntaxError):
             continue
 
-        # Use ImportParser to extract imports
         visitor = ImportParser(max_depth=max_depth)
         visitor.visit(tree)
         imported_modules = visitor.get_imports()
@@ -379,60 +176,10 @@ def parse_imports(
         (
             (nodes[left], nodes[right])
             for left, right in edges
-            # Remove the invalid nodes
             if left in nodes and right in nodes
         )
     )
     return DepGraph(graph)
-
-
-def _is_python_module(path: Path) -> bool:
-    """Check if a directory is a Python module by looking for __init__.py.
-
-    Args:
-        path: Path to check
-
-    Returns:
-        True if the directory contains __init__.py, False otherwise
-
-    """
-    # FIXME(alvaro): Add support for namespace packages (PEP 420)
-    return (path / "__init__.py").exists()
-
-
-def get_module_root_path(path: Path) -> Path:
-    """Return the Path to the root of the module tree for the input file.
-
-    This function traverses up the directory tree from the given Python file,
-    looking for the outermost directory that is still a Python module (contains __init__.py),
-    or stops at the project root indicator (pyproject.toml, setup.py, etc).
-
-    Args:
-        path: Path to a Python module file.
-
-    Returns:
-        Path to the root of the module tree (directory containing __init__.py or just below project root).
-
-    Raises:
-        AssertionError: If the input path is not a file.
-
-    Examples:
-        >>> get_module_root_path(Path("src/foo/bar/baz.py"))
-        Path("src/foo")
-        >>> get_module_root_path(Path("mypackage/subpackage/module.py"))
-        Path("mypackage")
-    """
-    assert path.is_file(), "We must have a module file"
-    parent = path.resolve().parent
-    last_module_dir = parent
-    while True:
-        if parent == parent.parent or _is_project_root(parent):
-            break
-        if not _is_python_module(parent):
-            break
-        last_module_dir = parent
-        parent = parent.parent
-    return last_module_dir
 
 
 if __name__ == "__main__":

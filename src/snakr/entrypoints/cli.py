@@ -101,4 +101,13 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    from pathlib import Path
+
+    from snakr.dependency import visualize_dot
+    from snakr.parser import parse_imports
+
+    visualize_dot(
+        parse_imports(
+            Path("/Users/alvaro/code/snakr/src/snakr/entrypoints/cli.py")
+        ).graph
+    )

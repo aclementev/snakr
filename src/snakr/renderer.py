@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import networkx as nx
 
-from snakr.dependency import DepGraph, ImportType, Module
+from snakr.dependency import DepGraph, ImportType
 
 if TYPE_CHECKING:
     import pygraphviz as pgv
