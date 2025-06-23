@@ -269,7 +269,7 @@ def parse_imports(
     path: Path, max_depth: int | None = None, ignore_modules: set[str] | None = None
 ) -> DepGraph:
     """
-    Recursively parse all import statements from a Python file and its dependencies.
+    Recursively parse all import statements from a Python file and its dependencies, including parent package __init__.py files in correct order.
 
     Args:
         path: Path to the Python file to analyze.
@@ -284,22 +284,40 @@ def parse_imports(
     """
     queue = collections.deque()
     processed = set()
+    preprocessed = set()
     ignore_modules = ignore_modules or set()
+    nodes = {}
+    edges = []
 
     # FIXME(alvaro): This is a O(k) check
     def _is_ignored_module(module: str) -> bool:
         return any(_is_submodule(module, ignored) for ignored in ignore_modules)
 
-    # Seed with the initial module
+    def _queue_module_and_parents(module_name: str):
+        """
+        Queue all parent packages' __init__.py modules and the target module itself,
+        ensuring each is only queued if not already processed. Also, add edges from each child to its parent.
+        """
+        parts = module_name.split(".")
+        parent_packages = [".".join(parts[:i]) for i in range(1, len(parts))]
+        all_to_queue = parent_packages + [module_name]
+        # Add parent edges: child -> parent using zip with slices
+        for child, parent in zip(all_to_queue[1:], all_to_queue[:-1]):
+            if child and parent:
+                edges.append((child, parent))
+        for mod in all_to_queue:
+            if mod and mod not in processed and not _is_ignored_module(mod):
+                queue.append(mod)
+
+    # Seed with the initial module and its parents
     start_module = path_to_module(path)
     parent_module = find_module_root(path)
 
-    queue.append(start_module)
     if _is_ignored_module(start_module):
         raise ValueError("The initial module cannot be in the ignored modules")
 
-    nodes = {}
-    edges = []
+    _queue_module_and_parents(start_module)
+
     while queue:
         module_name = queue.popleft()
         # Skip if in ignore_modules or is a submodule of any ignored module
@@ -308,7 +326,6 @@ def parse_imports(
         if module_name in processed:
             continue
         processed.add(module_name)
-        # print("Processing", module_name)
 
         module_result = find_module(module_name, parent_module=parent_module)
         if module_result is None:
@@ -331,9 +348,8 @@ def parse_imports(
         for imported_name in imported_modules:
             if imported_name not in processed and not _is_ignored_module(imported_name):
                 edges.append((module_name, imported_name))
-                queue.append(imported_name)
+                _queue_module_and_parents(imported_name)
 
-    # Build the graph
     graph = nx.DiGraph()
     graph.add_nodes_from(nodes.values())
     graph.add_edges_from(
